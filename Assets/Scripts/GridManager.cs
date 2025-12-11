@@ -37,8 +37,11 @@ public class GridManager : MonoBehaviour
     [SerializeField]
     private Tilemap fowTiles;
     
+    private SortedSet<DijkstrasNodeInfo> sortedSet;
+    public Dictionary<Vector2Int, DijkstrasNodeInfo> PlayerDijkstra;
     //Player Data
    public GameObject player; 
+   public Dictionary<DijkstrasNodeInfo, DijkstrasNodeInfo> playerRange;
    public Dictionary<Vector2Int, TileInfo> fowVision;
    
    //Tile Color Data
@@ -64,6 +67,8 @@ public class GridManager : MonoBehaviour
        fowTintedTiles = new Dictionary<Vector2Int, Color>();
        fowVision = new Dictionary<Vector2Int, TileInfo>();
        player = GameObject.FindWithTag("Player");
+       sortedSet = new SortedSet<DijkstrasNodeInfo>();
+       playerRange = new Dictionary<DijkstrasNodeInfo, DijkstrasNodeInfo>();
        if(displayFOWTiles)
        {
            fowTiles.GetComponent<TilemapRenderer>().enabled = true;
@@ -72,6 +77,7 @@ public class GridManager : MonoBehaviour
        {
            fowTiles.GetComponent<TilemapRenderer>().enabled = false;
        }
+       CreateGrid();
    }
    
    public void AddFOWTile(Vector2Int pos, Color tint)
@@ -214,7 +220,7 @@ public class GridManager : MonoBehaviour
             for (int y = fowTiles.cellBounds.yMin - 20; y < fowTiles.cellBounds.yMax + 20; y++)
             {
                 Vector3 worldPosition = fowTiles.CellToWorld(new Vector3Int(x, y, 0));
-                fowVision.Add(new Vector2Int(x, y));
+                fowVision.Add(new Vector2Int(x, y), new TileInfo());
             }
         }
 
@@ -224,28 +230,202 @@ public class GridManager : MonoBehaviour
     {
         List<Vector2Int> neighbors = new List<Vector2Int>();
 
-        if (map.ContainsKey(new Vector2Int(position.x - 1, position.y)))
+        if (fowVision.ContainsKey(new Vector2Int(position.x - 1, position.y)))
         {
             neighbors.Add(new Vector2Int(position.x - 1, position.y));
         }
 
-        if (map.ContainsKey(new Vector2Int(position.x + 1, position.y)))
+        if (fowVision.ContainsKey(new Vector2Int(position.x + 1, position.y)))
         {
             neighbors.Add(new Vector2Int(position.x + 1, position.y));
         }
 
-        if (map.ContainsKey(new Vector2Int(position.x, position.y - 1)))
+        if (fowVision.ContainsKey(new Vector2Int(position.x, position.y - 1)))
         {
             neighbors.Add(new Vector2Int(position.x, position.y - 1));
         }
 
-        if (map.ContainsKey(new Vector2Int(position.x, position.y + 1)))
+        if (fowVision.ContainsKey(new Vector2Int(position.x, position.y + 1)))
         {
             neighbors.Add(new Vector2Int(position.x, position.y + 1));
         }
 
         return neighbors;
 
+    }
+    public Vector2 GetTileCenter(Vector2Int gridPos)
+    {
+        TileInfo tile;
+        bool exists = fowVision.TryGetValue(gridPos, out tile);
+        Vector3Int posn = new Vector3Int(gridPos.x, gridPos.y, 0);
+
+        if (!exists)
+        {
+            throw new ArgumentException("tile does not exist on grid");
+        }
+
+        return (Vector2)fowTiles.GetCellCenterWorld(new Vector3Int(gridPos.x, gridPos.y, 0));
+    }
+    
+    /*
+    * @brief Converts the current grid map to a sorted set for Dijkstra
+    *
+       private Dictionary<Vector2Int, TileInfo> map;
+    */
+    public SortedSet<DijkstrasNodeInfo> MapToSortedSet()
+    {
+        sortedSet.Clear();
+        DijkstrasNodeInfo currentNode;
+
+        foreach (KeyValuePair<Vector2Int, TileInfo> tile in fowVision)
+        {
+            currentNode = new DijkstrasNodeInfo();
+            currentNode.position = tile.Key;
+            currentNode.parent = null;
+            currentNode.rawDist = 1;
+            sortedSet.Add(currentNode);
+        }
+        return sortedSet;
+    }
+    public void PlayerDijkstras()
+    {
+        Debug.Log("Running PlayerDijkstras");
+        fowTintedTiles.Clear();
+        //fowVision.Clear();
+        playerRange.Clear();
+        SortedSet<DijkstrasNodeInfo> toSearch;
+        toSearch = MapToSortedSet();
+        Vector2 playerVector2 = new Vector2(player.transform.position.x, player.transform.position.y);
+        Vector2Int playerTransform = Vector2Int.RoundToInt(playerVector2);
+        Dijkstras(ref playerRange, ref toSearch, playerTransform, -1);
+        if (PlayerDijkstra == null)
+        {
+            PlayerDijkstra = new Dictionary<Vector2Int, DijkstrasNodeInfo>();
+        }
+        else
+        {
+            PlayerDijkstra.Clear();
+        }
+        foreach (var entry in playerRange)
+        {
+            if (entry.Key != null)
+            {
+                Debug.Log(entry.Key);
+                PlayerDijkstra.Add(entry.Key.position, entry.Key);
+                ChangeFOWValue(entry.Key);
+            }
+        }
+        if (displayFOWTiles)
+            ColorFOWTiles();
+    }
+    
+    public void AddFOWDebugTile(Vector2Int pos, Color tint)
+    {
+        if (!fowTintedTiles.ContainsKey(pos) && (displayFOWTiles))
+        {
+            fowTintedTiles.Add(pos, tint);
+        }
+        else
+        {
+            Debug.Log(pos + "already exists in Dictonary");
+        }
+    }
+    void ChangeFOWValue(DijkstrasNodeInfo node)
+    {
+        TileInfo tile;
+        bool exists = fowVision.TryGetValue(node.position, out tile);
+        Debug.Log("Tile sight value" + tile.sightValue);
+        int visionRange = player.GetComponent<PlayerMovement>().visionDistance;
+        if (!exists)
+        {
+            //throw new ArgumentException("tile does not exist on grid");
+        }
+        
+            if (node.rawDist <= visionRange)
+            {
+                tile.sightValue = FOWEnum.CurrentSeeing;
+            }
+        
+        else if (node.rawDist > visionRange)
+        {
+            if (tile.sightValue == FOWEnum.CurrentSeeing)
+            {
+                tile.sightValue = FOWEnum.PrevSeen;
+            }
+        }
+
+    }
+    void ColorFOWTiles()
+    {
+        TileInfo currentTile;
+        Color tileTint = Color.white;
+        int visionRange = player.GetComponent<PlayerMovement>().visionDistance;
+        //ConvertPlayerRangetoFOWVision();
+
+        if (displayFOWTiles)
+        {
+            foreach (var entry in fowVision)
+            {
+                currentTile = entry.Value;
+                if (currentTile.sightValue == FOWEnum.NeverSeen)
+                {
+                    tileTint = new Color(0, 0, 0, 1);
+                }
+                else if (currentTile.sightValue == FOWEnum.PrevSeen)
+                {
+                    tileTint = new Color(0, 0, 0, .25f);
+                }
+                else if (currentTile.sightValue == FOWEnum.CurrentSeeing)
+                {
+                    tileTint = new Color(0, 0, 0, 0);
+                }
+                //Debug.Log("Key Value: " + map.FirstOrDefault(x => x.Value == currentTile).Key);
+                AddFOWDebugTile(fowVision.FirstOrDefault(x => x.Value == currentTile).Key, tileTint);
+            }
+            TintFOWTiles();
+        }
+    }
+    public void TintTile(Vector2Int gridPos, Color color, Tilemap _tileMap)
+    {
+        TileInfo tile;
+        bool exists = fowVision.TryGetValue(gridPos, out tile);
+        Vector3Int posn = new Vector3Int(gridPos.x, gridPos.y, 0);
+
+        if (!exists)
+        {
+            throw new ArgumentException("tile does not exist on grid");
+        }
+        else
+        {
+            _tileMap.SetTileFlags(posn, TileFlags.None);
+            _tileMap.SetColor(posn, color);
+            Debug.Log(color);
+        }
+
+    }
+    private void TintFOWTiles()
+    {
+        Debug.Log("FOW Debug Tiles Count: " + fowTintedTiles.Count());
+        //TintDebugTiles(fowTintedTiles);
+        if (fowTintedTiles.Count() >= 1)
+        {
+            foreach (var tile in fowTintedTiles)
+            {
+                if (fowTintedTiles.ContainsKey(tile.Key))
+                {
+                    //TintTile(tile.Key, fowTintedTiles[tile.Key]);
+                    TintTile(tile.Key, fowTintedTiles[tile.Key], fowTiles);
+                }
+                else
+                {
+                    TintTile(tile.Key, Color.white, fowTiles);
+                }
+            }
+        }
+        else
+        {
+            return;
+        }
     }
     
     // Start is called once before the first execution of Update after the MonoBehaviour is created
@@ -257,6 +437,13 @@ public class GridManager : MonoBehaviour
     // Update is called once per frame
     void Update()
     {
-        
+        if(displayFOWTiles)
+        {
+            fowTiles.GetComponent<TilemapRenderer>().enabled = true;
+        }
+        else if(!displayFOWTiles)
+        {
+            fowTiles.GetComponent<TilemapRenderer>().enabled = false;
+        }
     }
 }
